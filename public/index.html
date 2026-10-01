@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PhytoMeasure · 植物显微切片测量</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">🌿 PhytoMeasure <span>植物显微切片测量</span></a>
+    <nav>
+      <a href="#/" data-nav="home">草稿与图片</a>
+      <a href="#/reports" data-nav="reports">已发布报告</a>
+      <a href="#/comparisons" data-nav="comparisons">报告比较</a>
+    </nav>
+  </header>
+
+  <!-- 首页 -->
+  <section id="view-home" class="view">
+    <div class="card upload-card">
+      <h2>上传显微图片</h2>
+      <p class="hint">支持 PNG / JPEG / WebP，单张最大 30 MB。图片与数据均保存在服务器本地。</p>
+      <form id="upload-form">
+        <input type="file" id="upload-input" name="image" accept="image/png,image/jpeg,image/webp" />
+        <button type="submit" class="primary">上传并开始标注</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>图片草稿</h2>
+      <div id="image-list" class="item-list"><p class="muted">加载中…</p></div>
+    </div>
+  </section>
+
+  <!-- 编辑器 -->
+  <section id="view-editor" class="view hidden">
+    <div class="editor-layout">
+      <aside class="sidebar">
+        <div class="side-head">
+          <a href="#/" class="back">← 返回列表</a>
+          <span id="ed-version" class="version-tag"></span>
+        </div>
+        <h2 id="ed-title" class="filename"></h2>
+
+        <div class="panel">
+          <h3>① 标尺定标</h3>
+          <div class="toolbar">
+            <button id="tool-calib" class="tool">📏 定标点工具</button>
+            <button id="fit-view" class="tool">⛶ 适应窗口</button>
+          </div>
+          <div id="calib-info" class="info"></div>
+        </div>
+
+        <div class="panel">
+          <h3>② 圈选细胞</h3>
+          <div class="toolbar">
+            <button id="tool-cell" class="tool">⭕ 画细胞外轮廓</button>
+            <button id="tool-hole" class="tool" disabled>🕳 为选中细胞画孔洞</button>
+            <button id="tool-pan" class="tool">✋ 平移</button>
+          </div>
+          <p class="hint">单击加点，双击 / 回车完成当前轮廓，Esc 取消，Backspace 撤销上一点；滚轮缩放、拖拽空白平移。缩放平移不改变测量值。</p>
+          <div id="draft-info" class="info"></div>
+          <div class="toolbar wrap">
+            <button id="finish-ring" class="tool small">完成轮廓</button>
+            <button id="undo-point" class="tool small">撤销点</button>
+            <button id="cancel-ring" class="tool small">取消绘制</button>
+            <button id="save-contours" class="primary small">保存全部轮廓</button>
+          </div>
+          <div id="cell-list" class="cell-list"></div>
+        </div>
+
+        <div class="panel">
+          <h3>③ 取样视野（细胞密度）</h3>
+          <div class="toolbar">
+            <button id="tool-field" class="tool">🔲 画取样视野</button>
+            <button id="tool-fieldhole" class="tool" disabled>🕓 为选中视野画孔洞</button>
+          </div>
+          <p class="hint">圈定命名视野以统计细胞密度：视野由不自交的外环与可选孔洞构成。
+            细胞以其<b>扣除孔洞后的净区域质心</b>归属，质心严格落在视野净区域才计入（边界不计入）；
+            视野可重叠，重叠细胞在各视野分别计数；净面积为零的细胞不计入。</p>
+          <div class="toolbar wrap">
+            <button id="save-fields" class="primary small" disabled>保存全部视野</button>
+          </div>
+          <div id="field-list" class="cell-list"></div>
+        </div>
+
+        <div class="panel">
+          <h3>④ 细胞测量结果（草稿）</h3>
+          <div id="measure-table-wrap"></div>
+        </div>
+
+        <div class="panel">
+          <h3>⑤ 视野细胞密度统计（草稿）</h3>
+          <div id="field-stats-wrap"></div>
+        </div>
+
+        <div class="panel">
+          <h3>⑥ 多视野合并统计（草稿）</h3>
+          <p class="hint">勾选<b>同一草稿内至少两个</b>视野，按所选视野净区域（外环扣除孔洞）的
+            <b>几何并集</b>统计：并集面积 mm²、细胞数、每 mm² 密度、计入细胞净面积总和 mm²。
+            细胞以净区域质心判定，<b>严格位于并集内部</b>才计入，同一细胞只计一次；
+            视野贴合接缝属于并集内部，并集外边界与共有孔洞不计入。草稿轮廓/视野/标尺改变后按当前数据实时重算。</p>
+          <div id="merge-field-list" class="merge-field-list"></div>
+          <div id="merge-result" class="merge-result"></div>
+        </div>
+
+        <div class="panel">
+          <h3>⑦ 细胞迁移（从已发布报告）</h3>
+          <p class="hint">把一份<b>已发布报告</b>的全部细胞按仿射变换迁移到当前草稿：
+            选择来源报告后，在来源快照与右侧大图上按<b>相同顺序</b>各标记 3 个<b>不共线</b>对应点，
+            预览逐个校验全部通过后才能确认迁移。迁移只把细胞<b>追加</b>到当前草稿
+            （保留名称、按当前标尺重算测量与视野统计），来源报告与已发布内容不受影响。</p>
+          <select id="migrate-report" class="migrate-select"></select>
+          <div id="migrate-source-wrap" class="hidden">
+            <p class="hint">① 在来源报告快照上依次点 3 个对应点：</p>
+            <canvas id="migrate-source-canvas" class="migrate-source"></canvas>
+            <div id="migrate-source-points" class="info"></div>
+            <p class="hint">② 在右侧当前草稿大图上依次点 3 个对应点：</p>
+            <div class="toolbar wrap">
+              <button id="tool-migrate" class="tool">🎯 标目标点工具</button>
+              <button id="migrate-reset" class="tool small">清除全部对应点</button>
+            </div>
+            <div id="migrate-target-points" class="info"></div>
+            <div class="toolbar wrap">
+              <button id="migrate-preview" class="primary small" disabled>预览迁移</button>
+              <button id="migrate-confirm" class="primary small" disabled>确认迁移</button>
+            </div>
+          </div>
+          <div id="migrate-result"></div>
+        </div>
+
+        <div class="panel">
+          <h3>⑧ 发布报告</h3>
+          <p class="hint">发布会冻结当时的图片、标尺、细胞轮廓、<b>取样视野与密度统计</b>；之后修改草稿不影响已发布报告。</p>
+          <button id="publish-btn" class="primary wide">发布当前草稿为报告</button>
+        </div>
+      </aside>
+
+      <main class="canvas-wrap">
+        <canvas id="canvas"></canvas>
+        <div id="zoom-indicator" class="zoom-indicator">100%</div>
+        <div id="status-toast" class="toast hidden"></div>
+      </main>
+    </div>
+  </section>
+
+  <!-- 报告 -->
+  <section id="view-reports" class="view hidden">
+    <div class="card">
+      <h2>已发布报告</h2>
+      <div class="toolbar wrap">
+        <button id="export-csv" class="primary small" disabled>导出选中 CSV</button>
+        <button id="export-zip" class="primary small" disabled>导出选中 ZIP（标注 PNG + CSV）</button>
+        <button id="export-single-png" class="small" disabled>导出单份标注 PNG</button>
+        <a href="#/compare/new" class="btn-like small" style="margin-left:auto">＋ 新建报告比较</a>
+      </div>
+      <div id="report-list" class="item-list"><p class="muted">加载中…</p></div>
+    </div>
+  </section>
+
+  <!-- 报告比较列表 -->
+  <section id="view-comparisons" class="view hidden">
+    <div class="card">
+      <h2>报告比较</h2>
+      <div class="toolbar wrap">
+        <a href="#/compare/new" class="btn-like small primary" id="comparison-new">＋ 新建报告比较</a>
+      </div>
+      <p class="hint">选择两份<b>不同</b>的已发布报告作为基线与复测，按两侧细胞<b>手动</b>建立一对一配对
+        （同名细胞不会自动配对）。比较只取两份报告冻结的定标与测量值，草稿后续改动或另发报告都不影响已存比较。</p>
+      <div id="comparison-list" class="item-list"><p class="muted">加载中…</p></div>
+    </div>
+  </section>
+
+  <!-- 比较编辑器 -->
+  <section id="view-compare-editor" class="view hidden">
+    <div class="card">
+      <div class="cmp-head">
+        <a href="#/comparisons" class="back">← 返回比较列表</a>
+        <span id="cmp-version" class="version-tag">尚未保存</span>
+      </div>
+      <h2 id="cmp-heading">新建报告比较</h2>
+
+      <div id="cmp-error" class="cmp-error hidden"></div>
+
+      <div class="cmp-form-row">
+        <label>比较记录标题（留空则自动生成）
+          <input type="text" id="cmp-title" maxlength="100" placeholder="例如：同一批切片 5 月 ↔ 9 月复测" />
+        </label>
+      </div>
+
+      <div id="cmp-picker-new">
+        <div class="cmp-pick-row">
+          <label>基线报告
+            <select id="cmp-pick-baseline"></select>
+          </label>
+          <label>复测报告
+            <select id="cmp-pick-retest"></select>
+          </label>
+          <button id="cmp-load" class="small">载入两侧细胞</button>
+        </div>
+        <p class="hint">选择两份<b>不同</b>的已发布报告。比较只读取报告冻结的定标与测量值，草稿后续改动或另发报告都不会影响已保存的比较。</p>
+      </div>
+      <div id="cmp-picker-fixed" class="hidden"></div>
+
+      <div class="toolbar wrap">
+        <button id="cmp-save" class="primary small">保存比较记录</button>
+        <a id="cmp-csv" class="btn-like small hidden" target="_blank">导出比较 CSV</a>
+      </div>
+
+      <div id="cmp-workspace"></div>
+    </div>
+  </section>
+
+  <section id="view-report-detail" class="view hidden">
+    <div class="editor-layout">
+      <aside class="sidebar">
+        <div class="side-head">
+          <a href="#/reports" class="back">← 返回报告列表</a>
+        </div>
+        <h2 id="rp-title" class="filename"></h2>
+        <div class="panel">
+          <h3>发布信息</h3>
+          <div id="rp-meta" class="info"></div>
+        </div>
+        <div class="panel">
+          <h3>测量结果（发布时冻结）</h3>
+          <div id="rp-table-wrap"></div>
+        </div>
+        <div class="panel">
+          <h3>视野细胞密度统计（发布时冻结）</h3>
+          <div id="rp-field-wrap"></div>
+        </div>
+        <div class="panel">
+          <h3>多视野合并统计（发布时冻结）</h3>
+          <p class="hint">勾选<b>本报告内至少两个</b>视野，按所选视野净区域（外环扣除孔洞）的<b>几何并集</b>统计。
+            细胞以净区域质心严格位于并集内部才计入，同一细胞只计一次；
+            结果只读取<b>发布时冻结数据</b>，不随后续草稿变化。</p>
+          <div id="rp-merge-field-list" class="merge-field-list"></div>
+          <div id="rp-merge-result" class="merge-result"></div>
+        </div>
+        <div class="panel">
+          <h3>导出</h3>
+          <div class="toolbar wrap">
+            <a id="rp-png-link" class="btn-like" download>标注 PNG</a>
+            <a id="rp-csv-link" class="btn-like" download>测量 CSV</a>
+            <a id="rp-field-csv-link" class="btn-like" download>视野统计 CSV</a>
+          </div>
+        </div>
+      </aside>
+      <main class="canvas-wrap">
+        <canvas id="report-canvas"></canvas>
+        <div id="report-zoom" class="zoom-indicator">100%</div>
+      </main>
+    </div>
+  </section>
+
+  <script src="/geometry-client.js"></script>
+  <script src="/merge-stats.js"></script>
+  <script src="/api.js"></script>
+  <script src="/canvas-view.js"></script>
+  <script src="/editor.js"></script>
+  <script src="/reports.js"></script>
+  <script src="/compare.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

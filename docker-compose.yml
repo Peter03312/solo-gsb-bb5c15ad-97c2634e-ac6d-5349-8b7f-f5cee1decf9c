@@ -1,0 +1,19 @@
+services:
+  phytomeasure:
+    build: .
+    image: phytomeasure:latest
+    container_name: phytomeasure
+    ports:
+      # 宿主机端口:容器端口。宿主机端口可通过环境变量 HOST_PORT 覆盖
+      - "${HOST_PORT:-8080}:8080"
+    environment:
+      # 容器内数据目录（SQLite + 图片 + 报告快照均保存在这里）
+      DATA_DIR: /app/data
+    volumes:
+      # 命名卷持久化全部本地数据；也可改为 ./data:/app/data 使用绑定目录
+      - phytomeasure-data:/app/data
+    restart: unless-stopped
+    init: true
+
+volumes:
+  phytomeasure-data:
