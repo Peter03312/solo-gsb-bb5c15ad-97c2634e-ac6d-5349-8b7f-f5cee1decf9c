@@ -255,3 +255,56 @@ table.cmp-table td.num { text-align: right; }
 @media (max-width: 720px) {
   .cmp-pools { grid-template-columns: 1fr; }
 }
+
+/* 报告更正链 */
+.chain-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255,255,255,.015);
+  padding: 8px 10px;
+}
+.chain-card .item { border: none; background: var(--panel2); }
+.chain-badge {
+  display: inline-block; margin-left: 8px;
+  font-size: 11px; padding: 1px 8px; border-radius: 10px;
+  border: 1px solid var(--warn); color: var(--warn); font-weight: 600;
+  vertical-align: middle;
+}
+.chain-badge.current { border-color: var(--accent); color: var(--accent); }
+.chain-reason { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.chain-reason b { color: var(--warn); font-weight: 600; }
+.chain-history {
+  margin: 6px 4px 2px 26px; padding: 7px 10px;
+  border-left: 2px solid var(--line);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.chain-history-head { font-size: 11.5px; color: var(--muted); }
+.chain-history-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; }
+.chain-history-row a { color: var(--accent); text-decoration: none; }
+.chain-history-row a:hover { text-decoration: underline; }
+.chain-history-reason { color: var(--warn); font-size: 11.5px; }
+
+/* 详情页更正链横幅 */
+.chain-banner {
+  border-radius: 8px; padding: 8px 12px; margin: 8px 0 4px;
+  font-size: 12.5px; line-height: 1.6; border: 1px solid var(--line);
+}
+.chain-banner:empty { display: none; }
+.chain-banner.current { border-color: var(--accent); background: rgba(79,209,197,.08); }
+.chain-banner.history { border-color: var(--warn); background: rgba(245,166,35,.08); }
+.chain-banner a { color: var(--accent); }
+.chain-banner-links { font-weight: 600; margin-bottom: 2px; }
+.chain-banner-self { color: var(--text); }
+
+/* 更正表单 */
+.correct-form { display: flex; flex-direction: column; gap: 8px; }
+.correct-label { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: var(--muted); }
+.correct-form textarea, .correct-form input[type=text] {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 7px; padding: 8px 10px; font: inherit; resize: vertical;
+}
+.correct-form textarea:focus, .correct-form input[type=text]:focus {
+  outline: none; border-color: var(--accent);
+}
+#rp-correct-error { align-self: center; }
+

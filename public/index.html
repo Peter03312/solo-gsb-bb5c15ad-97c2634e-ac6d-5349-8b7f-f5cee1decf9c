@@ -155,6 +155,9 @@
         <button id="export-single-png" class="small" disabled>导出单份标注 PNG</button>
         <a href="#/compare/new" class="btn-like small" style="margin-left:auto">＋ 新建报告比较</a>
       </div>
+      <p class="hint">按<b>更正链</b>展示：每条链只显示一份<b>当前有效报告</b>（勾选框对应当前版本标识），
+        其下可展开各次<b>更正原因与历史版本</b>；历史报告内容冻结，仍可按原标识查看、读取与导出。
+        既有比较记录、导出链接始终指向创建时选定的旧标识。</p>
       <div id="report-list" class="item-list"><p class="muted">加载中…</p></div>
     </div>
   </section>
@@ -219,9 +222,14 @@
           <a href="#/reports" class="back">← 返回报告列表</a>
         </div>
         <h2 id="rp-title" class="filename"></h2>
+        <div id="rp-chain-banner" class="chain-banner"></div>
         <div class="panel">
           <h3>发布信息</h3>
           <div id="rp-meta" class="info"></div>
+        </div>
+        <div class="panel">
+          <h3>更正（勘误发布）</h3>
+          <div id="rp-correct-panel"></div>
         </div>
         <div class="panel">
           <h3>测量结果（发布时冻结）</h3>

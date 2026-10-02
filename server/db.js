@@ -41,6 +41,10 @@ function initDb(dataDir) {
       calib         TEXT NOT NULL,
       cells         TEXT NOT NULL,
       fields        TEXT NOT NULL DEFAULT '[]', -- 发布时冻结的取样视野
+      -- 更正链：普通发布时 chain_id 与自身 id 相同；更正发布时沿用被更正报告的 chain_id。
+      chain_id      TEXT NOT NULL,
+      prev_report_id TEXT,                   -- 被本报告更正的前一份报告 id；普通发布为 NULL
+      reason        TEXT,                    -- 更正原因；普通发布为 NULL
       created_at    TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE
     );
@@ -66,6 +70,18 @@ function initDb(dataDir) {
   };
   ensureColumn('images', 'fields', `ALTER TABLE images ADD COLUMN fields TEXT NOT NULL DEFAULT '[]'`);
   ensureColumn('reports', 'fields', `ALTER TABLE reports ADD COLUMN fields TEXT NOT NULL DEFAULT '[]'`);
+
+  // 更正链字段的旧库幂等升级（本轮新增）：
+  // 旧报告都是普通发布（无前序、无原因），chain_id 回填为自身 id；
+  // prev_report_id / reason 保持 NULL，即每条链仅一份“当前有效报告”。
+  const hadChainCols = db.prepare(`PRAGMA table_info(reports)`).all()
+    .some((c) => c.name === 'chain_id');
+  if (!hadChainCols) {
+    db.exec(`ALTER TABLE reports ADD COLUMN chain_id TEXT`);
+    db.exec(`ALTER TABLE reports ADD COLUMN prev_report_id TEXT`);
+    db.exec(`ALTER TABLE reports ADD COLUMN reason TEXT`);
+    db.prepare(`UPDATE reports SET chain_id = id WHERE chain_id IS NULL`).run();
+  }
 
   return db;
 }

@@ -6,7 +6,9 @@
 **细胞数、净面积（mm²）与每 mm² 细胞密度**；并可对**同一草稿/报告内至少两个视野**
 按其净区域**几何并集**查看**合并统计**（并集面积、去重细胞数、密度与计入净面积总和）；
 可发布为不可变报告、导出**标注 PNG**、**测量 CSV** 与**视野统计 CSV**；
-并支持把一份已发布报告的全部细胞经**三点对应仿射变换**整体迁移到另一张切片草稿。
+并支持把一份已发布报告的全部细胞经**三点对应仿射变换**整体迁移到另一张切片草稿；
+已发布报告还可基于**同一切片的当前草稿**发起**更正（勘误发布）**，生成新版本不可变报告，
+旧版按**更正链**保留、仍可用原标识查看，页面与 HTTP API 均可追溯。
 
 - 技术栈：Node.js（Express）+ SQLite（better-sqlite3）+ 原生 Canvas 前端
 - 图片与数据**全部本地保存**（无任何外部服务依赖）：
@@ -94,11 +96,27 @@
       报告侧**只读取发布时冻结数据**，草稿后续改动不影响结果；
     - **选择不足两个视野、视野标识重复、视野标识不存在**都会被明确拒绝（HTTP 400）；
       合并统计**不写库、不改变**任何原有逐视野统计与报告内容。
+12. **报告更正（勘误发布）与更正链追溯**：发现已发布内容需要修订时，在报告详情页对
+    **当前有效报告**发起更正，选择**同一切片的当前草稿**并填写**更正原因**。
+    - 提交必须携带三件依据：**所选报告标识**、**读取时草稿版本 `draftVersion`**、
+      **读取时更正链末端标识 `tipReportId`**；
+    - 仅当**所选报告仍为链末端**、**草稿版本未变**且草稿**通过与普通发布相同的校验**时，
+      才生成一份**新的不可变报告与新图片快照**，并记录 `chain_id / 前序报告 / 更正原因`
+      的前后关联；旧版自动转为历史；
+    - **草稿版本或链末端在提交时已变化**（他人并发更正、对历史版本发起更正）→ **HTTP 409**，
+      返回最新草稿版本、最新链末端标识与链摘要，调用方刷新后重试；
+    - **原因空白、报告不存在、草稿不存在、草稿与报告切片不同、缺少链末端标识**分别明确报错
+      （400 / 404）；任何失败都发生在写库与复制快照之前，**不留下报告或快照**；
+    - 「已发布报告」页按**更正链**展示：每条链只显示一份**当前有效报告**及其最新更正原因，
+      其下为各历史版本（旧 → 新，含各次更正原因）；**历史报告仍可按原标识查看**冻结内容；
+    - **既有报告读取与导出**（详情、PNG、测量/视野 CSV、批量导出、ZIP）与**已有比较记录**
+      对旧标识**始终使用原冻结内容**；普通发布行为不变（仍各自开启一条新链）。
 
 ## 配置项
 
-本轮（多视野合并统计）**未引入新的环境变量、外部依赖或数据库表结构变更**（合并统计为
-只读实时计算，不写库），沿用既有配置；旧数据库无需任何迁移即可直接使用。
+本轮（报告更正链）在 `reports` 表新增 `chain_id / prev_report_id / reason` 三列，
+**应用启动时自动幂等迁移**：旧报告的 `chain_id` 回填为自身 id（即各自成链、当前有效），
+前序与原因为 NULL；**无需手工迁移、旧数据行为不变**。未引入新的环境变量或外部依赖。
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -179,6 +197,12 @@ npm start
     - 预览全部通过后点 **确认迁移**（携带预览时读取的草稿版本；若期间草稿被改动，
       会提示版本过期并自动刷新，需重新预览）；成功后映射细胞追加到细胞列表末尾，
       测量表与视野统计立即按当前标尺重算，可照常继续编辑、保存或发布。
+13. 需要修订已发布报告时，打开该报告（须为**当前有效版本**），在 **更正（勘误发布）** 面板
+    确认系统已锁定**同一切片的当前草稿**（显示其当前草稿版本），填写**更正原因**后提交：
+    - 通过即生成**新版不可变报告与新图片快照**并自动跳转到新版；旧版转为历史，
+      在「已发布报告」页每条链下可看到各版原因与历史链接，历史版本仍按原标识打开与导出；
+    - 若期间草稿被改动或该报告已被他人更正，会收到冲突提示并自动打开最新当前有效报告，
+      重新核对后再次提交即可；原因留空、选到其他切片的草稿会被明确拒绝。
 
 ## 目录结构
 
@@ -194,6 +218,7 @@ npm start
 │   ├── fields.js      # 取样视野：质心归属、mm²/密度统计、未定标“待定标”
 │   ├── merge-stats.js # 多视野几何并集（平面排列精确面积）+ 严格并集内部判定 + 合并统计（服务端/页端共用 UMD）
 │   ├── compare.js     # 报告比较：手动一对一配对校验、冻结值差值/变化率视图
+│   ├── corrections.js # 更正链：发布校验复用、链分组/追溯、更正原因规整（HTTP 与自测共用）
 │   ├── transfer.js    # 细胞迁移：三点对应点校验、仿射求解、整批映射+逐细胞校验
 │   ├── render.js      # sharp + SVG 渲染标注 PNG
 │   └── exporter.js    # CSV（测量/汇总/视野统计/比较）与 ZIP 导出
@@ -203,6 +228,7 @@ npm start
 ├── test-merge.js      # 多视野合并统计自测（npm test）
 ├── test-compare.js    # 报告比较自测（npm test）
 ├── test-transfer.js   # 细胞迁移自测（npm test）
+├── test-corrections.js# 报告更正链端到端自测（npm test，临时数据目录 + 真实 HTTP）
 └── data/              # 运行后生成：app.db、images/、snapshots/
 ```
 
@@ -536,6 +562,131 @@ for (const s of result.image.fieldStats) {
 }
 ```
 
+## 报告更正（勘误发布）与追溯 HTTP 接口
+
+从一份**已发布报告**发起更正：基于**同一切片的当前草稿**重新冻结一份**新的不可变报告与图片快照**，
+旧版保留在同一条更正链中。普通发布的报告 `chainId = 自身 id`、`prevReportId/reason = null`；
+更正发布沿用被更正报告的 `chainId`，并记录 `prevReportId` 与 `reason`。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/report-chains` | 更正链列表：每条链一项，含当前有效报告、最新原因、链长度与**完整历史**（`reports` 旧 → 新，每项带 `current` 标记）；未更正过的链 `corrected:false`、长度 1 |
+| `GET /api/reports/:id/trace` | 单份报告追溯：`{chainId, length, position, currentReportId, report, reports}`，历史报告也可按原标识调用 |
+| `POST /api/reports/:id/correct` | 发起更正（见下），成功 **201** 返回 `{report（新版）, image（更新后草稿）, previousReport, reason, chain}` |
+
+`POST /api/reports/:id/correct` 请求体（路径 `:id` 即**所选报告标识**）：
+
+```json
+{
+  "draftId": "7ca3…",
+  "draftVersion": 6,
+  "tipReportId": "f01d…",
+  "reason": "初版标尺实际距离误填为 100 μm，实际为 50 μm",
+  "title": "切片A 报告（修订版）"
+}
+```
+
+- `draftId` 必须与报告属于**同一切片**（即报告的 `imageId`）；
+- `draftVersion` 为读取更正表单时的**草稿版本**；
+- `tipReportId` 为读取更正表单时的**链末端（当前有效）报告标识**——通常就是路径 `:id`，
+  对历史版本发起更正或并发场景下会与当前末端不同；
+- `reason` 必填且不可为空白（最长 500 字）；`title` 可省略，默认沿用首版标题并标注“（更正 n）”。
+
+错误语义：
+
+- 所选报告不存在 → **404**；草稿不存在 → **404**；
+- 缺少 `draftId` / `tipReportId` / `reason`，原因空白或超长，草稿与报告**切片不同**，
+  或草稿不满足发布校验（未定标 / 无细胞 / 存在未按当前标尺计算的轮廓）→ **400**；
+- **草稿版本过期**、`tipReportId` 与所选报告不一致、**所选报告已不是链末端**（已有后继更正）
+  → **409**，响应体带 `{currentTipReportId, currentVersion, chain}`：
+
+```json
+{
+  "error": "更正被拒绝：报告「…」已被后续更正取代，链末端现为 a2…；请刷新后对当前有效报告发起更正",
+  "currentTipReportId": "a2…",
+  "currentVersion": 9,
+  "chain": {
+    "chainId": "f01d…", "currentReportId": "a2…", "currentTitle": "切片A 报告（更正 1）",
+    "imageId": "7ca3…", "length": 2,
+    "latestReason": "初版标尺实际距离误填为 100 μm，实际为 50 μm",
+    "updatedAt": "2026-10-02 04:00:11"
+  }
+}
+```
+
+- 任一失败都在复制快照 / 写库**之前**返回，**不留下报告或快照**；
+- 成功后旧版报告仍可 `GET /api/reports/:旧id`、`/file`、`/png`、`/csv`、`/field-csv`
+  与批量导出，返回各自冻结内容；**已有比较记录**引用的旧标识与冻结值同样不变。
+
+curl 示例：
+
+```bash
+# 1) 打开报告详情时读取追溯链与同切片草稿（得到 tipReportId / draftVersion）
+curl -s http://localhost:8080/api/reports/$RID/trace | jq '{length,position,currentReportId}'
+curl -s http://localhost:8080/api/images/$IMG_ID | jq .version
+
+# 2) 发起更正（tipReportId 取上一步 currentReportId，通常等于 $RID）
+curl -s -X POST http://localhost:8080/api/reports/$RID/correct \
+  -H 'Content-Type: application/json' \
+  -d "{\"draftId\":\"$IMG_ID\",\"draftVersion\":6,\"tipReportId\":\"$RID\",
+       \"reason\":\"初版标尺实际距离误填为 100 μm，实际为 50 μm\"}" \
+  | jq '{newId: .report.id, prev: .report.prevReportId, reason: .report.reason,
+         chainLen: (.chain.reports|length), newDraftVersion: .image.version}'
+
+# 3) 查看链列表 / 旧版追溯（旧版冻结内容不变）
+curl -s http://localhost:8080/api/report-chains | jq '.[] |
+  {currentReportId, length, latestReason, history: [.reports[] | {id, reason, current}]}'
+curl -s http://localhost:8080/api/reports/$RID/csv | head -3   # 仍为旧版冻结数值
+```
+
+Node.js 示例（无第三方依赖；含 409 刷新重试骨架）：
+
+```js
+const base = 'http://localhost:8080';
+
+async function correctReport(reportId, draftId, reason, title) {
+  // 读取表单时刻的依据：链末端 + 草稿版本
+  const [trace, img] = await Promise.all([
+    fetch(`${base}/api/reports/${reportId}/trace`).then((r) => r.json()),
+    fetch(`${base}/api/images/${draftId}`).then((r) => r.json())
+  ]);
+  if (trace.currentReportId !== reportId) {
+    throw new Error(`该报告不是当前有效版本，请改用 ${trace.currentReportId} 发起更正`);
+  }
+  const res = await fetch(`${base}/api/reports/${reportId}/correct`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      draftId,
+      draftVersion: img.version,       // 读取时草稿版本
+      tipReportId: trace.currentReportId, // 读取时链末端标识
+      reason, title
+    })
+  });
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 409) {
+    const e = new Error(body.error);
+    e.status = 409; e.body = body; // body.currentTipReportId / currentVersion / chain
+    throw e; // 调用方据此打开最新末端、重新读取草稿后重试
+  }
+  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`); // 400/404：整次未生效
+  return body; // {report, image, previousReport, reason, chain}
+}
+
+try {
+  const out = await correctReport(process.env.RID, process.env.IMG,
+    '初版标尺实际距离误填为 100 μm，实际为 50 μm');
+  console.log(`已生成新版报告 ${out.report.id}，前序 ${out.report.prevReportId}，` +
+              `链内现有 ${out.chain.reports.length} 版`);
+} catch (e) {
+  if (e.status === 409) {
+    console.error(`冲突：最新末端 ${e.body.currentTipReportId}，草稿 v${e.body.currentVersion}，请刷新重试`);
+  } else {
+    console.error(e.message); // 原因空白 / 切片不同 / 不存在 / 草稿未达发布条件
+  }
+}
+```
+
 ## 报告比较 HTTP 接口
 
 | 方法与路径 | 说明 |
@@ -560,7 +711,10 @@ for (const s of result.image.fieldStats) {
 | `POST /api/images/:id/publish` | 发布冻结（含视野与统计；带 `version`，过期 409） |
 | **`POST /api/images/:id/migrate/preview`** | **迁移预览：三点对应仿射映射 + 逐细胞校验（不写入；返回预览时目标草稿版本）** |
 | **`POST /api/images/:id/migrate`** | **确认迁移（带预览时版本，过期 409；任一校验失败 400 整批不写入）** |
-| `GET /api/reports` / `GET /api/reports/:id` | 报告列表 / 冻结详情（旧报告 `fields` 为空列表） |
+| `GET /api/reports` / `GET /api/reports/:id` | 报告扁平列表 / 冻结详情（含 `chainId/prevReportId/reason`；旧报告 `fields` 为空列表） |
+| **`GET /api/report-chains`** | **更正链列表：每条链当前有效报告 + 最新原因 + 完整历史（旧 → 新）** |
+| **`GET /api/reports/:id/trace`** | **单份报告追溯：所在链全部版本、自身位置、当前有效报告标识（历史版本亦可调用）** |
+| **`POST /api/reports/:id/correct`** | **更正（勘误发布）：`{draftId, draftVersion, tipReportId, reason, title?}`；草稿版本/链末端过期 → 409 并返回最新信息；原因空白/切片不同 → 400；报告或草稿不存在 → 404；失败不留报告或快照** |
 | **`POST /api/reports/:id/field-merge`** | **报告内多视野合并统计（只读，只取发布时冻结数据；不足两个/重复/不存在 400）** |
 | `GET /api/reports/:id/file` / `/png` | 发布时图片快照 / 标注 PNG |
 | `GET /api/reports/:id/csv` | 测量 CSV（μm²，原义不变） |

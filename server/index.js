@@ -13,6 +13,7 @@ const cmp = require('./compare');
 const fieldsSvc = require('./fields');
 const mergeSvc = require('./merge-stats');
 const transfer = require('./transfer');
+const corrections = require('./corrections');
 const { renderAnnotatedPng } = require('./render');
 const { buildReportCsv, buildCombinedCsv, buildComparisonCsv, buildFieldStatsCsv, streamZip } = require('./exporter');
 
@@ -76,6 +77,10 @@ function hydrateReport(row) {
     cells,
     fields,
     fieldStats: fieldsSvc.buildFieldStats(fields, cells, calib ? calib.scale : null),
+    // 更正链信息：普通发布 prevReportId/reason 为 null；旧库链 id 回填为自身
+    chainId: row.chain_id || row.id,
+    prevReportId: row.prev_report_id || null,
+    reason: row.reason || null,
     createdAt: row.created_at
   };
 }
@@ -424,10 +429,10 @@ app.post('/api/images/:id/publish', (req, res) => {
   if (!checkVersion(img, req.body.version)) {
     return res.status(409).json({ error: `发布被拒绝：草稿已过期（携带版本 ${req.body.version}，当前版本 ${img.version}）。请重新读取最新草稿后再发布`, currentVersion: img.version });
   }
-  if (!img.calib) return badRequest(res, '尚不能发布：请先完成标尺定标');
-  if (img.cells.length === 0) return badRequest(res, '尚不能发布：请至少圈出一个细胞外轮廓');
-  for (const c of img.cells) {
-    if (typeof c.areaUm2 !== 'number') return badRequest(res, '尚不能发布：存在未按当前标尺计算测量值的轮廓，请重新保存轮廓');
+  try {
+    corrections.assertPublishable(img);
+  } catch (e) {
+    return badRequest(res, e.message);
   }
 
   const reportId = crypto.randomUUID();
@@ -444,11 +449,12 @@ app.post('/api/images/:id/publish', (req, res) => {
   try {
     const tx = db.transaction(() => {
       db.prepare(`INSERT INTO reports
-                  (id, image_id, draft_version, title, filename, snapshot_name, width, height, calib, cells, fields)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                  (id, image_id, draft_version, title, filename, snapshot_name, width, height, calib, cells, fields,
+                   chain_id, prev_report_id, reason)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`)
         .run(reportId, img.id, img.version, title, img.filename, snapName,
              img.width, img.height, JSON.stringify(img.calib), JSON.stringify(img.cells),
-             JSON.stringify(img.fields || []));
+             JSON.stringify(img.fields || []), reportId);
       db.prepare(`UPDATE images SET published = 1, version = version + 1,
                   updated_at = datetime('now') WHERE id = ?`).run(img.id);
     });
@@ -471,6 +477,14 @@ app.get('/api/reports', (_req, res) => {
   res.json(rows.map(hydrateReport));
 });
 
+// 更正链列表：每条链一项，只返回链的当前有效报告与完整历史（旧 → 新）。
+// 与 GET /api/reports 的扁平列表并存；既有读取/导出/比较仍使用扁平接口与原报告标识。
+app.get('/api/report-chains', (_req, res) => {
+  const rows = db.prepare('SELECT * FROM reports ORDER BY created_at ASC').all();
+  const reports = rows.map(hydrateReport);
+  res.json(corrections.buildChains(reports));
+});
+
 function getReportOr404(id) {
   const row = db.prepare('SELECT * FROM reports WHERE id = ?').get(id);
   return row ? hydrateReport(row) : null;
@@ -481,6 +495,168 @@ app.get('/api/reports/:id', (req, res) => {
   if (!report) return res.status(404).json({ error: '报告不存在' });
   res.json(report);
 });
+
+// 单份报告的更正链追溯：所在链全部版本（旧 → 新）、自身位置、当前有效报告标识。
+// 历史报告同样可按原标识调用本接口，内容取自各自的冻结数据。
+app.get('/api/reports/:id/trace', (req, res) => {
+  const rows = db.prepare('SELECT * FROM reports').all();
+  const reports = rows.map(hydrateReport);
+  const trace = corrections.buildTrace(reports, req.params.id);
+  if (!trace) return res.status(404).json({ error: '报告不存在' });
+  res.json(trace);
+});
+
+// ---------- 报告更正（勘误发布；乐观并发：草稿版本 + 读取时链末端标识） ----------
+//
+// 请求体：{ reportId?, draftId, draftVersion, tipReportId, reason, title? }
+//   reportId      路径报告标识（body.reportId 若给出须与之一致）
+//   draftId       同一切片的当前草稿（图片）标识
+//   draftVersion  读取更正表单时的草稿版本
+//   tipReportId   读取更正表单时该链的末端（当前有效）报告标识
+//   reason        更正原因（不可空白）
+// 仅当：所选报告仍为链末端（= tipReportId 且确无后继）、草稿版本未变、
+// 草稿与报告属于同一切片、草稿通过与普通发布相同的校验、原因非空时，
+// 才复制当前图片为新快照、生成新的不可变报告并记录 prev_report_id/reason/chain_id。
+// 任何失败都在写库/复制快照之前返回，不留下报告或快照。
+app.post('/api/reports/:id/correct', (req, res) => {
+  const body = req.body || {};
+
+  // 1) 所选报告必须存在
+  const report = getReportOr404(req.params.id);
+  if (!report) return res.status(404).json({ error: '被更正报告不存在，可能已被删除' });
+  if (typeof body.reportId === 'string' && body.reportId && body.reportId !== req.params.id) {
+    return badRequest(res, `请求体 reportId（${body.reportId}）与路径报告标识（${req.params.id}）不一致`);
+  }
+
+  // 2) 所选草稿必须存在
+  const draftId = body.draftId;
+  if (typeof draftId !== 'string' || !draftId) {
+    return badRequest(res, '请选择用于更正的当前草稿（draftId）');
+  }
+  const img = getImageOr404(draftId);
+  if (!img) return res.status(404).json({ error: `用于更正的草稿 ${draftId} 不存在，请重新选择同一切片的当前草稿` });
+
+  // 3) 草稿必须与报告属于同一切片
+  if (img.id !== report.imageId) {
+    return badRequest(res,
+      `切片不一致：报告「${report.title}」基于切片 ${report.imageId}，所选草稿属于另一切片 ${img.id}；只能选择同一切片的当前草稿发起更正`);
+  }
+
+  // 4) 原因不可空白
+  const reasonCheck = corrections.normalizeReason(body.reason);
+  if (reasonCheck.error) return badRequest(res, reasonCheck.error);
+  const reason = reasonCheck.reason;
+
+  // 5) 链末端标识：格式合法且与所选报告一致
+  const tipReportId = body.tipReportId;
+  if (typeof tipReportId !== 'string' || !tipReportId) {
+    return badRequest(res, '请携带读取更正表单时的更正链末端标识 tipReportId');
+  }
+  if (tipReportId !== report.id) {
+    // 操作者读取表单时的末端已不是当前选中的报告
+    return conflictOnTip(res, report,
+      `更正被拒绝：你携带的链末端为 ${tipReportId}，所选报告为 ${report.id}，请基于当前有效报告重新发起更正`);
+  }
+
+  // 6) 所选报告仍须为链末端（并发更正 / 对历史版本发起更正都在此拒绝）
+  const successor = db.prepare('SELECT id FROM reports WHERE prev_report_id = ?').get(report.id);
+  if (successor) {
+    return conflictOnTip(res, report,
+      `更正被拒绝：报告「${report.title}」已被后续更正取代，链末端现为 ${successor.id}；请刷新后对当前有效报告发起更正`);
+  }
+
+  // 7) 草稿版本乐观并发（与普通发布同一规则；同样回传最新链末端信息）
+  if (!checkVersion(img, body.draftVersion)) {
+    return conflictOnTip(res, report,
+      `更正被拒绝：草稿已过期（携带版本 ${body.draftVersion}，当前版本 ${img.version}）。请重新读取最新草稿与链末端后再提交更正`);
+  }
+
+  // 8) 草稿通过与普通发布相同的校验
+  try {
+    corrections.assertPublishable(img);
+  } catch (e) {
+    return badRequest(res, e.message);
+  }
+
+  // 链内历史版本数（用于默认标题与校验，理论上该报告既为末端即链长度）
+  const chainLength = db.prepare('SELECT COUNT(*) AS n FROM reports WHERE chain_id = ?')
+    .get(report.chainId).n;
+
+  const newReportId = crypto.randomUUID();
+  const title = (typeof body.title === 'string' && body.title.trim())
+    ? body.title.trim().slice(0, 100)
+    : corrections.correctedTitle(firstChainTitle(report.chainId), chainLength);
+
+  const srcRow = db.prepare('SELECT stored_name FROM images WHERE id = ?').get(img.id);
+  const snapExt = path.extname(srcRow.stored_name);
+  const snapName = `${newReportId}${snapExt}`;
+  // 通过全部校验后才固化新快照：新报告永久保留更正当时的图片文件
+  fs.copyFileSync(path.join(IMG_DIR, srcRow.stored_name), path.join(SNAP_DIR, snapName));
+
+  try {
+    const tx = db.transaction(() => {
+      db.prepare(`INSERT INTO reports
+                  (id, image_id, draft_version, title, filename, snapshot_name, width, height, calib, cells, fields,
+                   chain_id, prev_report_id, reason)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(newReportId, img.id, img.version, title, img.filename, snapName,
+             img.width, img.height, JSON.stringify(img.calib), JSON.stringify(img.cells),
+             JSON.stringify(img.fields || []), report.chainId, report.id, reason);
+      // 与普通发布一致：发布动作推进草稿版本一个号
+      db.prepare(`UPDATE images SET published = 1, version = version + 1,
+                  updated_at = datetime('now') WHERE id = ?`).run(img.id);
+    });
+    tx();
+  } catch (e) {
+    fs.rmSync(path.join(SNAP_DIR, snapName), { force: true });
+    throw e;
+  }
+
+  const newReport = hydrateReport(db.prepare('SELECT * FROM reports WHERE id = ?').get(newReportId));
+  const updatedImg = getImageOr404(img.id);
+  const trace = loadTrace(newReportId);
+  res.status(201).json({
+    report: newReport,
+    image: updatedImg,
+    previousReport: report,
+    reason,
+    chain: trace
+  });
+});
+
+// 链末端/草稿冲突（409）：返回最新链末端与最新草稿版本，便于调用方直接刷新
+function conflictOnTip(res, report, message) {
+  const all = db.prepare('SELECT * FROM reports').all().map(hydrateReport);
+  const chains = corrections.buildChains(all);
+  const trace = corrections.buildTrace(all, report.id);
+  const currentTipId = trace ? trace.currentReportId : report.id;
+  const chain = chainSummaryById(chains, trace ? trace.chainId : report.chainId);
+  const tipRow = db.prepare('SELECT image_id FROM reports WHERE id = ?').get(currentTipId);
+  const imgRow = tipRow ? db.prepare('SELECT version FROM images WHERE id = ?').get(tipRow.image_id) : null;
+  return res.status(409).json({
+    error: message,
+    currentTipReportId: currentTipId,
+    currentVersion: imgRow ? imgRow.version : null, // 同一切片当前草稿版本
+    chain
+  });
+}
+
+function chainSummaryById(chains, chainId) {
+  const chain = chains.find((c) => c.chainId === chainId);
+  return chain ? corrections.summarizeChain(chain) : null;
+}
+
+function loadTrace(reportId) {
+  const all = db.prepare('SELECT * FROM reports').all().map(hydrateReport);
+  return corrections.buildTrace(all, reportId);
+}
+
+// 取链首版标题（用于默认“（更正 n）”命名）
+function firstChainTitle(chainId) {
+  const row = db.prepare('SELECT title FROM reports WHERE chain_id = ? ORDER BY created_at ASC LIMIT 1')
+    .get(chainId);
+  return row ? row.title : '报告';
+}
 
 // ---------- 报告内多视野合并统计（只读；只使用发布时冻结数据） ----------
 //
@@ -736,7 +912,13 @@ app.get('/api/comparisons/:id/csv', (req, res) => {
 
 app.use('/api', (_req, res) => res.status(404).json({ error: '接口不存在' }));
 
-app.listen(PORT, () => {
-  console.log(`PhytoMeasure 已启动: http://localhost:${PORT}`);
-  console.log(`数据目录: ${DATA_DIR}`);
-});
+// 直接运行（node server/index.js / npm start）时监听；
+// 被测试代码 require 时只导出 app/db/目录常量，不占用端口。
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`PhytoMeasure 已启动: http://localhost:${PORT}`);
+    console.log(`数据目录: ${DATA_DIR}`);
+  });
+}
+
+module.exports = { app, db, DATA_DIR, IMG_DIR, SNAP_DIR };
