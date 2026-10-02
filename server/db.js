@@ -41,6 +41,8 @@ function initDb(dataDir) {
       calib         TEXT NOT NULL,
       cells         TEXT NOT NULL,
       fields        TEXT NOT NULL DEFAULT '[]', -- 发布时冻结的取样视野
+      corrects_report_id TEXT,                  -- 更正链：本报告更正自哪份报告（普通发布为 NULL）
+      correction_reason TEXT,                   -- 本次更正原因（普通发布为 NULL）
       created_at    TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE
     );
@@ -66,6 +68,9 @@ function initDb(dataDir) {
   };
   ensureColumn('images', 'fields', `ALTER TABLE images ADD COLUMN fields TEXT NOT NULL DEFAULT '[]'`);
   ensureColumn('reports', 'fields', `ALTER TABLE reports ADD COLUMN fields TEXT NOT NULL DEFAULT '[]'`);
+  // 更正链（本轮）：旧报告两列均为 NULL，自动视为各自链的链末端
+  ensureColumn('reports', 'corrects_report_id', `ALTER TABLE reports ADD COLUMN corrects_report_id TEXT`);
+  ensureColumn('reports', 'correction_reason', `ALTER TABLE reports ADD COLUMN correction_reason TEXT`);
 
   return db;
 }

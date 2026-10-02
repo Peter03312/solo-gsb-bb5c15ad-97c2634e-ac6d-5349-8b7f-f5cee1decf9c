@@ -255,3 +255,63 @@ table.cmp-table td.num { text-align: right; }
 @media (max-width: 720px) {
   .cmp-pools { grid-template-columns: 1fr; }
 }
+
+/* 更正链 */
+.chain-banner {
+  border-radius: 8px; padding: 9px 12px; font-size: 12.5px; line-height: 1.6;
+  margin: 4px 0 10px; border: 1px solid var(--line);
+}
+.chain-banner.superseded {
+  border-color: var(--warn); color: #ffe2b0; background: rgba(245,166,35,.10);
+}
+.chain-banner.tip {
+  border-color: var(--accent); color: #d7fffb; background: rgba(79,209,197,.08);
+}
+.chain-banner a { color: var(--accent); }
+
+.trace-list { display: flex; flex-direction: column; gap: 6px; }
+.trace-item {
+  border: 1px solid var(--line); border-radius: 7px;
+  padding: 7px 9px; background: var(--panel2); font-size: 12px; line-height: 1.55;
+}
+.trace-item.current { border-color: var(--accent); }
+.trace-item .t-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.trace-item .t-name { font-weight: 600; word-break: break-all; }
+.trace-item .t-sub { color: var(--muted); }
+.trace-tag {
+  font-size: 10.5px; padding: 1px 7px; border-radius: 10px; font-weight: 600;
+  border: 1px solid var(--line); color: var(--muted);
+}
+.trace-tag.tip { color: var(--accent); border-color: var(--accent); }
+.trace-tag.old { color: var(--warn); border-color: var(--warn); }
+.trace-reason { margin-top: 3px; color: #ffe2b0; }
+
+.correct-box { font-size: 12.5px; }
+.correct-box .hint { margin: 4px 0 8px; }
+.correct-box textarea, .correct-box input[type=text] {
+  width: 100%; background: var(--panel2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px;
+  font: inherit; resize: vertical;
+}
+.correct-box textarea { min-height: 64px; }
+.correct-box textarea:focus, .correct-box input[type=text]:focus { outline: none; border-color: var(--accent); }
+.correct-box label { display: block; color: var(--muted); margin: 8px 0 4px; }
+.correct-draft {
+  border: 1px dashed var(--line); border-radius: 7px; padding: 8px 10px;
+  background: rgba(255,255,255,.015); color: var(--muted); line-height: 1.6;
+}
+.correct-error {
+  color: #ffd9d9; border: 1px solid var(--danger); background: rgba(255,93,93,.08);
+  border-radius: 7px; padding: 7px 10px; margin-top: 8px; font-size: 12.5px;
+}
+.correct-ok { color: var(--accent); font-size: 12.5px; margin-top: 8px; }
+
+/* 列表内更正链历史折叠块 */
+.chain-history {
+  margin: -4px 0 6px 86px;
+  padding-left: 12px;
+  border-left: 2px solid var(--line);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.chain-history.hidden { display: none; }
+.chain-history-inner { gap: 6px; }

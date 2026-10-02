@@ -89,6 +89,22 @@ const API = {
   async getReport(id) {
     return jsonOrThrow(await fetch(`/api/reports/${id}`));
   },
+  // 更正链：每条链的当前有效报告、历史与更正原因
+  async listReportChains() {
+    return jsonOrThrow(await fetch('/api/report-chains'));
+  },
+  // 追溯某份报告所在链（历史报告按原标识查看其链路）
+  async traceReport(id) {
+    return jsonOrThrow(await fetch(`/api/reports/${id}/trace`));
+  },
+  // 发起更正：携带所选报告标识、读取时草稿版本、读取时链末端标识、原因
+  async correctReport(id, payload) {
+    return jsonOrThrow(await fetch(`/api/reports/${id}/correct`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }));
+  },
   exportCsvUrl(id) { return `/api/reports/${id}/csv`; },
   exportFieldCsvUrl(id) { return `/api/reports/${id}/field-csv`; },
   exportPngUrl(id) { return `/api/reports/${id}/png`; },

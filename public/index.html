@@ -149,6 +149,8 @@
   <section id="view-reports" class="view hidden">
     <div class="card">
       <h2>已发布报告</h2>
+      <p class="hint">每条<b>更正链</b>只展示一份<b>当前有效报告</b>（链末端）及其更正原因与历史；
+        被更正的历史报告仍可按原标识打开、读取与导出。普通发布的报告各自成链。</p>
       <div class="toolbar wrap">
         <button id="export-csv" class="primary small" disabled>导出选中 CSV</button>
         <button id="export-zip" class="primary small" disabled>导出选中 ZIP（标注 PNG + CSV）</button>
@@ -219,6 +221,15 @@
           <a href="#/reports" class="back">← 返回报告列表</a>
         </div>
         <h2 id="rp-title" class="filename"></h2>
+        <div id="rp-chain-banner" class="chain-banner hidden"></div>
+        <div class="panel">
+          <h3>更正链 · 历史追溯</h3>
+          <div id="rp-trace" class="trace-list"></div>
+        </div>
+        <div class="panel">
+          <h3>发起更正（以当前草稿生成新报告）</h3>
+          <div id="rp-correct" class="correct-box"></div>
+        </div>
         <div class="panel">
           <h3>发布信息</h3>
           <div id="rp-meta" class="info"></div>

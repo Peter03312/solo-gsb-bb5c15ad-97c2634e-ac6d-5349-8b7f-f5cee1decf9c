@@ -6,7 +6,9 @@
 **细胞数、净面积（mm²）与每 mm² 细胞密度**；并可对**同一草稿/报告内至少两个视野**
 按其净区域**几何并集**查看**合并统计**（并集面积、去重细胞数、密度与计入净面积总和）；
 可发布为不可变报告、导出**标注 PNG**、**测量 CSV** 与**视野统计 CSV**；
-并支持把一份已发布报告的全部细胞经**三点对应仿射变换**整体迁移到另一张切片草稿。
+并支持把一份已发布报告的全部细胞经**三点对应仿射变换**整体迁移到另一张切片草稿；
+对已发布报告还可基于**同一切片的当前草稿**发起**更正**：生成新的不可变报告与图片快照、
+记录更正原因并串成**更正链**，列表展示每条链的当前有效报告、原因与历史，历史报告按原标识永久可查。
 
 - 技术栈：Node.js（Express）+ SQLite（better-sqlite3）+ 原生 Canvas 前端
 - 图片与数据**全部本地保存**（无任何外部服务依赖）：
@@ -94,16 +96,31 @@
       报告侧**只读取发布时冻结数据**，草稿后续改动不影响结果；
     - **选择不足两个视野、视野标识重复、视野标识不存在**都会被明确拒绝（HTTP 400）；
       合并统计**不写库、不改变**任何原有逐视野统计与报告内容。
+12. **报告更正链（同一切片、当前草稿、不可变新版本）**：在「已发布报告」中打开一份
+    **当前有效报告**（链末端），可用**同一切片的当前草稿**发起更正并填写**更正原因**。
+    - 提交必须携带**所选报告标识**、**读取时的草稿版本号**与**读取时的更正链末端标识**；
+      仅当所选报告**仍是链末端**、草稿版本未变、且草稿**通过既有发布校验**
+      （已定标、至少一个细胞、测量值已按当前标尺计算）时，才复制**新的图片快照**并
+      生成**新的不可变报告**，以 `correctsReportId` 指向前一份报告、记录更正原因；
+    - 草稿版本或链末端在期间发生变化 → **HTTP 409**，并返回**最新草稿版本、当前链末端
+      与最新草稿**，页面自动刷新后需重新提交；
+    - **更正原因为空白、报告或草稿不存在、所选草稿与报告不是同一切片**都明确报错
+      （400 / 404）；任何失败都**不会留下**新报告记录或图片快照；
+    - 「已发布报告」列表**按更正链**展示：每条链只显示**一份当前有效报告（链末端）**、
+      **最近更正原因**与**历史版本**（可展开，历史报告按原标识打开）；普通发布各自成链；
+    - **历史报告永不改变，仍可按原标识读取、导出（PNG/CSV/ZIP）**；既有的报告读取、
+      导出、以及已保存的**报告比较**记录对旧标识继续使用原冻结内容；**普通发布行为完全不变**。
 
 ## 配置项
 
-本轮（多视野合并统计）**未引入新的环境变量、外部依赖或数据库表结构变更**（合并统计为
-只读实时计算，不写库），沿用既有配置；旧数据库无需任何迁移即可直接使用。
+本轮（报告更正链）**未引入新的环境变量或外部依赖**；仅对 `reports` 表幂等补两列
+（`corrects_report_id`、`correction_reason`，旧报告两列为 `NULL`、自动视为各自链末端），
+**旧数据库启动时自动迁移、无需手工变更**。沿用既有配置：
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `PORT` | `8080` | 容器/服务监听端口 |
-| `DATA_DIR` | `./data`（Docker 中为 `/app/data`） | SQLite、原始图片、快照的保存目录（比较记录同在 `app.db` 内） |
+| `DATA_DIR` | `./data`（Docker 中为 `/app/data`） | SQLite、原始图片、快照的保存目录（比较记录、更正链关系同在 `app.db` 内） |
 | `HOST_PORT` | `8080` | 仅 Compose 使用：宿主机映射端口 |
 
 ## 一条命令启动（Docker Compose）
@@ -164,6 +181,11 @@ npm start
    未定标时面积/密度显示「待定标」，细胞数仍可查看；
 9. 点击 **发布当前草稿为报告**，在「已发布报告」中查看冻结快照，
    报告页展示与「视野统计 CSV」完全一致的冻结视野统计，并可导出 PNG / 测量 CSV / 视野统计 CSV；
+   - 发布后若发现圈选有误：在**同一切片草稿**中修改并保存，打开该报告（需仍是
+     **当前有效报告**），在「**发起更正**」面板确认读取到的草稿版本与链末端标识、
+     填写**更正原因**后提交，即生成新的不可变报告；版本或链末端过期会提示并自动刷新；
+   - 报告页顶部横幅标明「当前有效 / 历史」，「更正链 · 历史追溯」面板列出每一版与原因，
+     历史版本标题可点开按原标识查看其冻结内容并导出；
 10. 需要合并多个视野时，在编辑器 **⑥ 多视野合并统计**（或报告页「多视野合并统计」）面板
     **勾选至少两个视野**：立即给出所选视野净区域**几何并集**的净面积 mm²、细胞数、
     每 mm² 密度与计入细胞净面积总和；重叠处细胞只计一次，贴合接缝计入、并集外边界不计入；
@@ -194,6 +216,7 @@ npm start
 │   ├── fields.js      # 取样视野：质心归属、mm²/密度统计、未定标“待定标”
 │   ├── merge-stats.js # 多视野几何并集（平面排列精确面积）+ 严格并集内部判定 + 合并统计（服务端/页端共用 UMD）
 │   ├── compare.js     # 报告比较：手动一对一配对校验、冻结值差值/变化率视图
+│   ├── corrections.js # 报告更正链：原因校验、链构建/追溯摘要、发布校验与乐观冲突判定
 │   ├── transfer.js    # 细胞迁移：三点对应点校验、仿射求解、整批映射+逐细胞校验
 │   ├── render.js      # sharp + SVG 渲染标注 PNG
 │   └── exporter.js    # CSV（测量/汇总/视野统计/比较）与 ZIP 导出
@@ -203,6 +226,8 @@ npm start
 ├── test-merge.js      # 多视野合并统计自测（npm test）
 ├── test-compare.js    # 报告比较自测（npm test）
 ├── test-transfer.js   # 细胞迁移自测（npm test）
+├── test-corrections.js # 报告更正链纯逻辑自测（npm test）
+├── test-correct-api.js # 报告更正链端到端 HTTP 自测（npm test，临时目录起服务）
 └── data/              # 运行后生成：app.db、images/、snapshots/
 ```
 
@@ -536,6 +561,117 @@ for (const s of result.image.fieldStats) {
 }
 ```
 
+## 报告更正链 HTTP 接口
+
+对一份**当前有效报告**（链末端），用**同一切片的当前草稿**生成新的不可变报告。
+历史报告永不改变，仍按原标识读取/导出；普通发布（`POST /api/images/:id/publish`）行为不变。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/report-chains` | 更正链列表：每条链的**当前有效报告**（`tipId`/`current`）、**最近更正原因** `reason`、`history` 与完整 `members` |
+| `GET /api/reports/:id/trace` | 追溯某份报告所在链：`rootId`/`tipId`/`length`/该报告 `position`/`isTip`、由旧到新的 `members` |
+| `POST /api/reports/:id/correct` | 发起更正（见下） |
+
+`GET /api/reports` 与 `GET /api/reports/:id` 的每个报告对象另含
+`correctsReportId`、`correctionReason`、`chainId`（链根 id）、`isChainTip`（是否当前有效）。
+
+### 发起更正
+
+`POST /api/reports/:id/correct`，请求体：
+
+```json
+{
+  "reason": "第 2 个细胞孔洞圈错，重描后重新发布",
+  "draftVersion": 5,
+  "expectedTipId": "<读取时该链末端报告 id>",
+  "title": "切片A 第2版（可省略，省略则沿用被更正报告标题）"
+}
+```
+
+- `reason`：**必填**，去除首尾空白后不能为空，最长 500 字；
+- `draftVersion`：发起表单读取到的**当前草稿版本号**（整数）；
+- `expectedTipId`：读取时**更正链末端**报告标识（通常即所选报告自身的 id）；
+- 服务端另校验：所选草稿必须与报告**同一切片**（`image_id` 相同）、报告与草稿都存在、
+  草稿通过**既有发布校验**（已定标、至少一个细胞、测量值已按当前标尺计算）。
+
+成功 **201**：复制新图片快照并插入新报告（`correctsReportId` 指向前一份、记录原因），
+草稿 `version + 1`；响应含新报告 `report`、更新后 `image`、`correctedReportId`、`reason`
+与 `trace`（新链追溯视图）。
+
+错误语义（**任何失败都不留下报告或快照**）：
+
+- 报告不存在 → **404** `{error}`；报告对应切片草稿不存在 → **404**；
+- 原因为空/非字符串/超长、缺少或非整数 `draftVersion`、缺少 `expectedTipId`、
+  草稿与报告不同切片、草稿不满足发布校验 → **400** `{error}`；
+- 草稿版本变化、或所选报告已不是链末端/携带的末端标识过期 → **409**，返回最新信息：
+
+```json
+{
+  "error": "更正被拒绝：草稿已过期（携带版本 v4，当前版本 v5）……",
+  "currentVersion": 5,
+  "currentTipId": "<当前链末端报告 id>",
+  "tip": { "id": "…", "title": "…", "correctionReason": "…" },
+  "image": { "…": "最新草稿对象…" }
+}
+```
+
+curl 示例（`RID`=被更正报告，`IMG`=同一切片草稿）：
+
+```bash
+# 1) 读取报告与其追溯，拿到当前链末端；读取同一切片草稿拿到版本号
+curl -s http://localhost:8080/api/reports/$RID | jq '{id,isChainTip,imageId,chainId}'
+curl -s http://localhost:8080/api/reports/$RID/trace | jq '{tipId,length,isTip}'
+curl -s http://localhost:8080/api/images/$IMG | jq .version
+
+# 2) 发起更正（expectedTipId 用上一步的 tipId，draftVersion 用草稿版本）
+curl -s -X POST http://localhost:8080/api/reports/$RID/correct \
+  -H 'Content-Type: application/json' \
+  -d "{\"reason\":\"孔洞圈错重描\",\"draftVersion\":5,\"expectedTipId\":\"$RID\"}" \
+  | jq '{newId: .report.id, corrects: .report.correctsReportId, reason: .report.correctionReason,
+         trace: {tipId: .trace.tipId, length: .trace.length}}'
+
+# 3) 按更正链查看当前有效报告与历史（历史报告仍可用 /api/reports/<旧id> 打开）
+curl -s http://localhost:8080/api/report-chains | jq '.chains[] |
+  {tipId, length, reason, history: [.history[].id]}'
+```
+
+Node.js 示例（无第三方依赖；含 409 自动取最新信息后重试）：
+
+```js
+const base = 'http://localhost:8080';
+
+async function correctReport(reportId, reason, title) {
+  // 读取时的三份依据：报告（同切片 imageId）、草稿版本、链末端标识
+  const report = await (await fetch(`${base}/api/reports/${reportId}`)).json();
+  const trace = await (await fetch(`${base}/api/reports/${reportId}/trace`)).json();
+  const draft = await (await fetch(`${base}/api/images/${report.imageId}`)).json();
+
+  const res = await fetch(`${base}/api/reports/${reportId}/correct`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      reason,
+      draftVersion: draft.version,
+      expectedTipId: trace.tipId,
+      ...(title ? { title } : {})
+    })
+  });
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 409) {
+    // 版本/链末端过期：服务端已返回最新草稿与当前链末端，按需重新确认后重试
+    const e = new Error(`${body.error}（当前草稿 v${body.currentVersion}，链末端 ${body.currentTipId}）`);
+    e.status = 409; e.body = body; throw e;
+  }
+  if (!res.ok) { const e = new Error(body.error || `HTTP ${res.status}`); e.status = res.status; throw e; }
+  return body; // 201：新不可变报告 + 快照，前一份成为历史
+}
+
+// 第一次更正
+const r2 = await correctReport(process.env.RID, '第 2 个细胞孔洞圈错，重描');
+console.log(`已生成 ${r2.report.id}，更正自 ${r2.report.correctsReportId}`);
+// 继续更正：对新的链末端 r2.report.id 再发（携带其草稿版本与 r2 作为 expectedTipId）
+```
+
 ## 报告比较 HTTP 接口
 
 | 方法与路径 | 说明 |
@@ -560,7 +696,10 @@ for (const s of result.image.fieldStats) {
 | `POST /api/images/:id/publish` | 发布冻结（含视野与统计；带 `version`，过期 409） |
 | **`POST /api/images/:id/migrate/preview`** | **迁移预览：三点对应仿射映射 + 逐细胞校验（不写入；返回预览时目标草稿版本）** |
 | **`POST /api/images/:id/migrate`** | **确认迁移（带预览时版本，过期 409；任一校验失败 400 整批不写入）** |
-| `GET /api/reports` / `GET /api/reports/:id` | 报告列表 / 冻结详情（旧报告 `fields` 为空列表） |
+| `GET /api/reports` / `GET /api/reports/:id` | 报告列表 / 冻结详情（含 `correctsReportId`、`correctionReason`、`chainId`、`isChainTip`） |
+| **`GET /api/report-chains`** | **更正链列表：每条链的当前有效报告、最近更正原因与历史** |
+| **`GET /api/reports/:id/trace`** | **追溯某份报告所在更正链（根、末端、位置、由旧到新 members）** |
+| **`POST /api/reports/:id/correct`** | **发起更正：`{reason, draftVersion, expectedTipId, title?}`；过期 409 返回最新信息；失败不留报告/快照** |
 | **`POST /api/reports/:id/field-merge`** | **报告内多视野合并统计（只读，只取发布时冻结数据；不足两个/重复/不存在 400）** |
 | `GET /api/reports/:id/file` / `/png` | 发布时图片快照 / 标注 PNG |
 | `GET /api/reports/:id/csv` | 测量 CSV（μm²，原义不变） |

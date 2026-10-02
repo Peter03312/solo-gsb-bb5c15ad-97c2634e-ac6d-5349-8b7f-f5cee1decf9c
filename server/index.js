@@ -13,6 +13,7 @@ const cmp = require('./compare');
 const fieldsSvc = require('./fields');
 const mergeSvc = require('./merge-stats');
 const transfer = require('./transfer');
+const corrections = require('./corrections');
 const { renderAnnotatedPng } = require('./render');
 const { buildReportCsv, buildCombinedCsv, buildComparisonCsv, buildFieldStatsCsv, streamZip } = require('./exporter');
 
@@ -76,8 +77,21 @@ function hydrateReport(row) {
     cells,
     fields,
     fieldStats: fieldsSvc.buildFieldStats(fields, cells, calib ? calib.scale : null),
+    correctsReportId: row.corrects_report_id || null, // 更正链：前一份报告（普通发布为 null）
+    correctionReason: row.correction_reason || null,   // 本次更正原因（普通发布为 null）
     createdAt: row.created_at
   };
+}
+
+// 为报告附上更正链位置标记（chainId=链根 id；isChainTip 是否当前有效报告）。
+// rows 为同一批水合报告时只需构建一次索引：传入可选 index 复用。
+function attachChainFlags(report, index) {
+  if (!report) return report;
+  const idx = index || corrections.buildChainIndex([report]);
+  const chain = idx.chains.find((c) => c.members.some((m) => m.id === report.id));
+  report.chainId = chain ? chain.rootId : report.id;
+  report.isChainTip = chain ? report.id === chain.tipId : true;
+  return report;
 }
 
 function badRequest(res, message) {
@@ -418,6 +432,37 @@ app.post('/api/images/:id/field-merge', (req, res) => {
 
 // ---------- 发布（乐观并发：携带读取时草稿版本） ----------
 
+// 固化一份报告：复制图片快照 + 事务内插入报告、推进草稿版本。
+// correctsReportId/correctionReason 仅更正发布时给出；失败时清理已复制的快照，
+// 不留下报告记录或图片文件。
+function freezeReport({ img, title, correctsReportId = null, correctionReason = null }) {
+  const reportId = crypto.randomUUID();
+  const srcRow = db.prepare('SELECT stored_name FROM images WHERE id = ?').get(img.id);
+  const snapExt = path.extname(srcRow.stored_name);
+  const snapName = `${reportId}${snapExt}`;
+  // 先固化图片快照：报告永远保留发布当时的图片文件
+  fs.copyFileSync(path.join(IMG_DIR, srcRow.stored_name), path.join(SNAP_DIR, snapName));
+
+  try {
+    const tx = db.transaction(() => {
+      db.prepare(`INSERT INTO reports
+                  (id, image_id, draft_version, title, filename, snapshot_name,
+                   width, height, calib, cells, fields, corrects_report_id, correction_reason)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(reportId, img.id, img.version, title, img.filename, snapName,
+             img.width, img.height, JSON.stringify(img.calib), JSON.stringify(img.cells),
+             JSON.stringify(img.fields || []), correctsReportId, correctionReason);
+      db.prepare(`UPDATE images SET published = 1, version = version + 1,
+                  updated_at = datetime('now') WHERE id = ?`).run(img.id);
+    });
+    tx();
+  } catch (e) {
+    fs.rmSync(path.join(SNAP_DIR, snapName), { force: true });
+    throw e;
+  }
+  return db.prepare('SELECT * FROM reports WHERE id = ?').get(reportId);
+}
+
 app.post('/api/images/:id/publish', (req, res) => {
   const img = getImageOr404(req.params.id);
   if (!img) return res.status(404).json({ error: '图片不存在' });
@@ -430,36 +475,14 @@ app.post('/api/images/:id/publish', (req, res) => {
     if (typeof c.areaUm2 !== 'number') return badRequest(res, '尚不能发布：存在未按当前标尺计算测量值的轮廓，请重新保存轮廓');
   }
 
-  const reportId = crypto.randomUUID();
   const title = (typeof req.body.title === 'string' && req.body.title.trim())
     ? req.body.title.trim().slice(0, 100)
     : `${img.filename.replace(/\.[^.]+$/, '')} 报告 ${new Date().toISOString().slice(0, 10)}`;
 
-  const srcRow = db.prepare('SELECT stored_name FROM images WHERE id = ?').get(img.id);
-  const snapExt = path.extname(srcRow.stored_name);
-  const snapName = `${reportId}${snapExt}`;
-  // 先固化图片快照：报告永远保留发布当时的图片文件
-  fs.copyFileSync(path.join(IMG_DIR, srcRow.stored_name), path.join(SNAP_DIR, snapName));
-
-  try {
-    const tx = db.transaction(() => {
-      db.prepare(`INSERT INTO reports
-                  (id, image_id, draft_version, title, filename, snapshot_name, width, height, calib, cells, fields)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(reportId, img.id, img.version, title, img.filename, snapName,
-             img.width, img.height, JSON.stringify(img.calib), JSON.stringify(img.cells),
-             JSON.stringify(img.fields || []));
-      db.prepare(`UPDATE images SET published = 1, version = version + 1,
-                  updated_at = datetime('now') WHERE id = ?`).run(img.id);
-    });
-    tx();
-  } catch (e) {
-    fs.rmSync(path.join(SNAP_DIR, snapName), { force: true });
-    throw e;
-  }
+  const row = freezeReport({ img, title });
 
   res.status(201).json({
-    report: hydrateReport(db.prepare('SELECT * FROM reports WHERE id = ?').get(reportId)),
+    report: attachChainFlags(hydrateReport(row)),
     image: getImageOr404(img.id)
   });
 });
@@ -468,7 +491,11 @@ app.post('/api/images/:id/publish', (req, res) => {
 
 app.get('/api/reports', (_req, res) => {
   const rows = db.prepare('SELECT * FROM reports ORDER BY created_at DESC').all();
-  res.json(rows.map(hydrateReport));
+  const reports = rows.map(hydrateReport);
+  // 列表同时给出每条更正链的位置标记（isChainTip=false 即已被后续更正取代）
+  const index = corrections.buildChainIndex(reports);
+  reports.forEach((r) => attachChainFlags(r, index));
+  res.json(reports);
 });
 
 function getReportOr404(id) {
@@ -479,8 +506,107 @@ function getReportOr404(id) {
 app.get('/api/reports/:id', (req, res) => {
   const report = getReportOr404(req.params.id);
   if (!report) return res.status(404).json({ error: '报告不存在' });
-  res.json(report);
+  const index = corrections.buildChainIndex(
+    db.prepare('SELECT * FROM reports').all().map(hydrateReport));
+  res.json(attachChainFlags(report, index));
 });
+
+// ---------- 更正链列表 / 追溯（只读） ----------
+//
+// 每条链以链根（最早一份普通发布）标识，链末端即当前有效报告；历史报告按原标识保留。
+function allReportChains() {
+  const reports = db.prepare('SELECT * FROM reports').all().map(hydrateReport);
+  const idx = corrections.buildChainIndex(reports);
+  // 列表按链末端发布时间倒序（同秒时用链根 id 兜底，保证顺序稳定）
+  return idx.chains
+    .map(corrections.summarizeChain)
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1
+      : a.rootId < b.rootId ? 1 : a.rootId > b.rootId ? -1 : 0));
+}
+
+app.get('/api/report-chains', (_req, res) => {
+  res.json({ chains: allReportChains() });
+});
+
+app.get('/api/reports/:id/trace', (req, res) => {
+  const reports = db.prepare('SELECT * FROM reports').all().map(hydrateReport);
+  const view = corrections.traceChain(reports, req.params.id);
+  if (!view) return res.status(404).json({ error: '报告不存在，无法追溯更正链' });
+  res.json(view);
+});
+
+// ---------- 发起更正（链末端 + 当前草稿 + 现有发布校验；乐观并发） ----------
+//
+// 请求体：{ reason, draftVersion, expectedTipId, title? }
+// 仅当所选报告仍为链末端、草稿版本未变且草稿通过既有发布校验时，
+// 才复制新快照并生成新的不可变报告，记录 correctsReportId 与更正原因；
+// 任何失败都不留下报告记录或快照文件。
+app.post('/api/reports/:id/correct', (req, res) => {
+  const target = getReportOr404(req.params.id);
+  if (!target) return res.status(404).json({ error: '被更正的报告不存在' });
+
+  const img = getImageOr404(target.imageId);
+  let parsed;
+  try {
+    parsed = corrections.validateCorrectionRequest(target, img, req.body || {});
+  } catch (e) {
+    return res.status(e.status || 400).json({ error: e.message });
+  }
+
+  // 计算当前链末端，进行版本/链末端乐观冲突判定
+  const reports = db.prepare('SELECT * FROM reports').all().map(hydrateReport);
+  const trace = corrections.traceChain(reports, target.id);
+  const currentTipId = trace ? trace.tipId : target.id;
+  const conflict = corrections.detectConflict({
+    img,
+    draftVersion: parsed.draftVersion,
+    target,
+    expectedTipId: parsed.expectedTipId,
+    currentTipId
+  });
+  if (conflict) {
+    // 拒绝并返回最新信息：当前草稿版本、链末端、当前草稿
+    return res.status(409).json({
+      error: conflict.message,
+      currentVersion: img.version,
+      currentTipId,
+      tip: corrections.summarizeReport(
+        reports.find((r) => r.id === currentTipId) || target),
+      image: getImageOr404(img.id)
+    });
+  }
+
+  // 乐观校验通过后再套用既有发布校验（定标/细胞/测量值）
+  try {
+    corrections.assertPublishable(img);
+  } catch (e) {
+    return badRequest(res, e.message);
+  }
+
+  // 标题：显式给出则使用；否则沿用被更正报告标题（原因单独记录在 correctionReason）
+  const title = (typeof req.body.title === 'string' && req.body.title.trim())
+    ? req.body.title.trim().slice(0, 100)
+    : target.title;
+
+  const row = freezeReport({
+    img,
+    title,
+    correctsReportId: target.id,
+    correctionReason: parsed.reason
+  });
+  const newReport = hydrateReport(row);
+  const newReports = db.prepare('SELECT * FROM reports').all().map(hydrateReport);
+  const newTrace = corrections.traceChain(newReports, newReport.id);
+
+  res.status(201).json({
+    report: attachChainFlags(newReport, corrections.buildChainIndex(newReports)),
+    image: getImageOr404(img.id),
+    correctedReportId: target.id,
+    reason: parsed.reason,
+    trace: newTrace
+  });
+});
+
 
 // ---------- 报告内多视野合并统计（只读；只使用发布时冻结数据） ----------
 //
